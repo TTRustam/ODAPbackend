@@ -89,7 +89,7 @@ smooth_flexible <- function(data_in,
 
 
 
-data_out <- smooth_flexible_group(
+data_out <- graduate_auto(
   data_in, 
   variable     = "Deaths", 
   rough_method = "auto",
