@@ -41,15 +41,20 @@ smooth_flexible <- function(data_in,
                                                     "KKN", "Arriaga", "United Nations",
                                                     "Strong", "Zigzag"),
                                   u5m           = NULL,
-                                  constrain_infants = TRUE) {
+                                  constrain_infants = TRUE,
+                            Sex = "t") {
   
   if (!(".id" %in% colnames(data_in))) {
     data_in <- data_in |>
       mutate(.id = "all")
   }
   
-  
   id <-  unique(data_in$.id)
+  # if there is a single subset then use sex and is defauдt for total
+  
+  if (!"Sex" %in% colnames(data_in)){
+    data_in$Sex <- Sex
+  }
   
   
   group_func <- function(group_data) {

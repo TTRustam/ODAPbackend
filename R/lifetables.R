@@ -73,7 +73,8 @@ lt_flexible <- function(data_in,
                         radix      = 1e+05,
                         SRB        = 1.05,
                         a0rule     = "Andreev-Kingkade",
-                        axmethod   = "UN (Greville)") {
+                        axmethod   = "UN (Greville)",
+                        Sex = "t") {
   
   data_in <- data_in |>
     mutate(Sex = substr(Sex, 1, 1),
@@ -88,6 +89,10 @@ lt_flexible <- function(data_in,
   # Set `extrapFit` here, avoiding circular reference in defaults
   if (is.null(extrapFit)) {
     extrapFit <- unique(data_in$Age)[unique(data_in$Age) >= 60]
+  }
+  
+  if (!"Sex" %in% colnames(data_in)){
+    data_in$Sex <- Sex
   }
   
   data_out <- data_in |>
