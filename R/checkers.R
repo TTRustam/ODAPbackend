@@ -131,8 +131,6 @@ check_numeric <- function(data) {
 #'     data = data)
 #'
 
-# Should we even ask some of these? Like if there is no AgeInt the reader will not work.
-
 check_missing_cols <- function(data) {
   # TR: DemoTools has the function age2int() to infer age intervals from an Age vector,
   # to technically we don't need it. We do however need ages specified as lower bounds of
@@ -482,25 +480,25 @@ check_lower <- function(data) {
 
 check_sex <- function(data) {
   if (any(str_detect("Sex", names(data)))) {
-    lvls <- unique(data$Sex)
-    
-    if (all(lvls %in% c("Male", "Female", "Total"))) {
+    lvls <- tolower(unique(data$Sex))
+
+    if (all(lvls %in% c("male", "female", "total"))) {
       message <- NA_character_
-      
+
     } else {
-      message <- "If Sex variable is given, it should be coded with either `Male`, `Female`, or `Total`."
-      
+      message <- "If Sex variable is given, it should be coded with either `male`, `female`, or `total`."
+
     }
-    
+
   } else {
     message <- NA_character_
-    
+
   }
-  
+
   res <- data.frame(check   = "check sex", message = message)
-  
+
   res$pass <- ifelse(!is.na(message), "Fail", "Pass")
-  
+
   return(res)
 }
 
@@ -557,9 +555,663 @@ check_data <- function(data) {
   
   # Combine all the check results
 
-  result <- do.call(rbind, list(ch1, ch2, ch3, 
-                                ch4, ch5, ch6, 
+  result <- do.call(rbind, list(ch1, ch2, ch3,
+                                ch4, ch5, ch6,
                                 ch7, ch8, ch9))
 
   return(result)
 }
+
+
+#' @title `check_missing_cols_generic`
+#' @description Check if Age column exists. For generic validation that doesn't require specific value columns.
+#' @param data tibble. A tibble with at minimum an Age column.
+#' @return A data.frame with validation results containing columns: `check`, `message`, `pass`.
+#' @export
+check_missing_cols_generic <- function(data) {
+  missing_cols <- setdiff("Age", names(data))
+
+  if (length(missing_cols) > 0) {
+    message <- "The Age column is missing from the data. The calculations are halted."
+  } else {
+    message <- NA_character_
+  }
+
+  res <- data.frame(check = "check missing columns", message = message)
+  res$pass <- ifelse(!is.na(message), "Fail", "Pass")
+  return(res)
+}
+
+
+#' @title `check_has_numeric`
+#' @description Check if the data has at least one numeric column besides Age.
+#' @param data tibble. A tibble with demographic data.
+#' @return A data.frame with validation results containing columns: `check`, `message`, `pass`.
+#' @export
+check_has_numeric <- function(data) {
+  # Get numeric columns excluding Age and internal columns
+  exclude_cols <- c("Age", "AgeInt", ".id", ".id_label")
+  numeric_cols <- names(data)[sapply(data, is.numeric)]
+  value_cols <- setdiff(numeric_cols, exclude_cols)
+
+  if (length(value_cols) == 0) {
+    message <- "No numeric value columns found. Please include at least one numeric column besides Age."
+  } else {
+    message <- NA_character_
+  }
+
+  res <- data.frame(check = "check has numeric", message = message)
+  res$pass <- ifelse(!is.na(message), "Fail", "Pass")
+  return(res)
+}
+
+
+#' @title `check_data_generic`
+#' @description Generic data validation for modules that accept any numeric column (heaping, smoothing, graduation).
+#' Requires only Age column and at least one numeric value column. Runs all standard age-related checks.
+#' @param data tibble. A tibble with Age column and at least one numeric value column.
+#' @return A data.frame with validation results containing columns: `check`, `message`, `pass`.
+#' @export
+#' @examples
+#' library(tibble)
+#' data <- tibble(
+#'   Age = c(0, 1, seq(5, 100, by = 5)),
+#'   births = runif(22, 1000, 10000),
+#'   population = runif(22, 50000, 100000)
+#' )
+#' check_data_generic(data = data)
+#'
+# TODO: this should be a wrapper to the module-specific checkers,
+# i.e. taking a second argument (module?).
+check_data_generic <- function(data) {
+
+  # Ensure '.id' column exists
+  if (!(".id" %in% colnames(data))) {
+    data$.id <- "all"
+  }
+
+  # Split data by '.id', apply checks, and combine results
+  split_data <- split(data, data$.id)
+
+  # Generic checks - only require Age and at least one numeric column
+  ch1 <- do.call(rbind, lapply(split_data, check_missing_cols_generic))
+  ch2 <- do.call(rbind, lapply(split_data, check_has_numeric))
+  ch3 <- do.call(rbind, lapply(split_data, check_rows))
+  ch4 <- do.call(rbind, lapply(split_data, check_nas))
+  ch5 <- do.call(rbind, lapply(split_data, check_coherent))
+  ch6 <- do.call(rbind, lapply(split_data, check_sequential))
+  ch7 <- do.call(rbind, lapply(split_data, check_redundant))
+  ch8 <- do.call(rbind, lapply(split_data, check_lower))
+
+  # Combine all the check results
+  result <- do.call(rbind, list(ch1, ch2, ch3, ch4, ch5, ch6, ch7, ch8))
+
+  return(result)
+}
+
+
+#' @title `check_numeric_opag`
+#' @description Check if the numeric columns for ODAP data (`Age`, `pop`) are numeric.
+#' @param data tibble. A tibble containing population data for ODAP analysis.
+#' @return A data.frame with 3 columns: `check` - the name of the test, `message` - The error message with corresponding information generated if the test is failed (if the test is passed evaluates to NA), `pass` - binary result of the test either "Fail" or "Pass".
+#' @importFrom purrr map
+#' @importFrom stringr str_flatten
+#' @export
+#' @examples
+#' library(tibble)
+#' data <- tibble(
+#'   Age = 0:100,
+#'   pop = c(9544406, 7471790, rep(1000000, 99)),
+#'   name = "India",
+#'   country_code = 356,
+#'   sex = "M",
+#'   year = 1971
+#' )
+#'
+#' check_numeric_opag(data = data)
+#'
+check_numeric_opag <- function(data) {
+  # For ODAP, we check Age and pop columns
+  data_check <- subset(data, select = c("Age", "pop"))
+
+  isnumeric <- data_check |>
+    map(~ is.numeric(.)) |>
+    unlist()
+
+  if (sum(isnumeric) < ncol(data_check)) {
+    message <- paste0(
+      "Please check the input data. Every column should be numeric, while columns ",
+      str_flatten(names(data_check)[!isnumeric], collapse = ", "),
+      " are not."
+    )
+  } else {
+    message <- NA_character_
+  }
+
+  data.frame(
+    check = "check_numeric_opag",
+    message = message,
+    pass = ifelse(is.na(message), "Pass", "Fail")
+  )
+}
+
+
+#' @title `check_missing_cols_opag`
+#' @description Check if any of the crucial columns are missing from ODAP population data: (`Age`, `pop`).
+#' @param data tibble. A tibble containing population data for ODAP analysis.
+#' @return A data.frame with 3 columns: `check` - the name of the test, `message` - The error message with corresponding information generated if the test is failed (if the test is passed evaluates to NA), `pass` - binary result of the test either "Fail" or "Pass".
+#' @importFrom stringr str_c str_flatten
+#' @export
+#' @examples
+#' library(tibble)
+#' data <- tibble(
+#'   Age = 0:100,
+#'   pop = c(9544406, 7471790, rep(1000000, 99)),
+#'   name = "India",
+#'   country_code = 356,
+#'   sex = "M",
+#'   year = 1971
+#' )
+#'
+#' check_missing_cols_opag(data = data)
+#'
+check_missing_cols_opag <- function(data) {
+  # For ODAP, we need Age and pop (population counts)
+  # Optional columns: name, sex, year, country_code, nLx
+  missing_cols <- setdiff(c("Age", "pop"), names(data))
+
+  if (length(missing_cols) > 0) {
+    message <- str_c(
+      "The following columns are missing from the data: ",
+      str_flatten(missing_cols, collapse = ", "),
+      ". The ODAP calculations require Age and pop (population counts)."
+    )
+  } else {
+    message <- NA_character_
+  }
+
+  data.frame(
+    check = "check_missing_cols_opag",
+    message = message,
+    pass = ifelse(is.na(message), "Pass", "Fail")
+  )
+}
+
+
+#' @title `check_nlx_if_present`
+#' @description Check if nLx column is present and valid (numeric, no NAs).
+#' @param data tibble. A tibble containing population data for ODAP analysis.
+#' @return A data.frame with 3 columns: `check` - the name of the test, `message` - The error message with corresponding information generated if the test is failed (if the test is passed evaluates to NA), `pass` - binary result of the test either "Fail" or "Pass".
+#' @export
+#' @examples
+#' library(tibble)
+#' data <- tibble(
+#'   Age = 0:100,
+#'   pop = c(9544406, 7471790, rep(1000000, 99)),
+#'   nLx = runif(101, 50000, 100000)
+#' )
+#'
+#' check_nlx_if_present(data = data)
+#'
+check_nlx_if_present <- function(data) {
+  # Check for both nLx and nlx (lowercase) since column names may be converted
+  has_nlx <- "nLx" %in% names(data)
+  has_nlx_lower <- "nlx" %in% names(data)
+
+  if (has_nlx || has_nlx_lower) {
+    # Use the correct column name
+    col_name <- if (has_nlx) "nLx" else "nlx"
+
+    # Check if numeric
+    if (!is.numeric(data[[col_name]])) {
+      return(data.frame(
+        check = "check_nlx_numeric",
+        message = "Column 'nLx' must be numeric.",
+        pass = "Fail"
+      ))
+    }
+
+    # Check for NAs
+    if (any(is.na(data[[col_name]]))) {
+      return(data.frame(
+        check = "check_nlx_missing",
+        message = "Column 'nLx' contains missing values.",
+        pass = "Fail"
+      ))
+    }
+
+    return(data.frame(
+      check = "check_nlx",
+      message = NA_character_,
+      pass = "Pass"
+    ))
+  }
+
+  # No nLx column - this is fine, will use WPP data
+  return(data.frame(
+    check = "check_nlx",
+    message = NA_character_,
+    pass = "Pass"
+  ))
+}
+
+
+#' @title `check_sex_opag`
+#' @description Checks sex variable for OPAG analysis. Unlike general check_sex,
+#' this does NOT allow 'Total' since OPAG requires sex-specific mortality data
+#' from WPP. Accepts various formats: M/F, m/f, Male/Female, male/female, males/females.
+#' @param data tibble. A tibble generated by the output of the read_data function.
+#' @return A data.frame with validation results containing columns: `check`, `message`, `pass`.
+#' @export
+#' @examples
+#' library(tibble)
+#' data <- tibble(Age = 0:100,
+#'                pop = c(9544406, 7471790, rep(1000000, 99)),
+#'                Sex = "m")
+#' check_sex_opag(data = data)
+#'
+check_sex_opag <- function(data) {
+  if (any(str_detect("Sex", names(data)))) {
+    lvls <- unique(data$Sex)
+    # Normalize sex values for comparison (handle m/f/male/female variants)
+    lvls_lower <- tolower(lvls)
+    valid_male <- lvls_lower %in% c("m", "male", "males")
+    valid_female <- lvls_lower %in% c("f", "female", "females")
+
+    if (all(valid_male | valid_female)) {
+      message <- NA_character_
+    } else {
+      message <- "If Sex variable is given, it should be coded as `male` or `female` (or `Male`/`Female`, `m`/`f`). `Total` is not supported for OPAG."
+    }
+  } else {
+    message <- NA_character_
+  }
+
+  res <- data.frame(check = "check sex", message = message)
+  res$pass <- ifelse(!is.na(message), "Fail", "Pass")
+  return(res)
+}
+
+
+#' @title `check_data_opag`
+#' @description Upper level function that checks ODAP population data quality. Checks if the columns are numeric, if any of the columns is missing, if there is insufficient rows, if there are missing data entries, if ages do not start with 0, and also if ages are coherent, sequential and not redundant.
+#' @param data tibble. A tibble containing population data for ODAP analysis with at minimum Age and pop columns.
+#' @return A data.frame with validation results containing columns: `check`, `message`, `pass`.
+#' @export
+#' @examples
+#' library(tibble)
+#' data <- tibble(
+#'   Age = 0:100,
+#'   pop = c(9544406, 7471790, rep(1000000, 99)),
+#'   name = "India",
+#'   country_code = 356,
+#'   sex = "M",
+#'   year = 1971
+#' )
+#'
+#' check_data_opag(data = data)
+#'
+check_data_opag <- function(data) {
+
+  # Ensure '.id' column exists
+  if (!(".id" %in% colnames(data))) {
+    data$.id <- "all"
+  }
+
+  # Extract unique .id values
+  id <- unique(data$.id)
+
+  # Perform checks
+  # Split data by '.id', apply checks, and combine results
+  split_data <- split(data, data$.id)
+
+  # ODAP-specific checks (using pop instead of Deaths/Exposures)
+  ch1 <- do.call(rbind, lapply(split_data, check_numeric_opag))
+  ch2 <- do.call(rbind, lapply(split_data, check_missing_cols_opag))
+  ch3 <- do.call(rbind, lapply(split_data, check_rows))
+  ch4 <- do.call(rbind, lapply(split_data, check_nas))
+  ch5 <- do.call(rbind, lapply(split_data, check_coherent))
+  ch6 <- do.call(rbind, lapply(split_data, check_sequential))
+  ch7 <- do.call(rbind, lapply(split_data, check_redundant))
+  ch8 <- do.call(rbind, lapply(split_data, check_lower))
+  ch9 <- do.call(rbind, lapply(split_data, check_sex_opag))
+  ch10 <- do.call(rbind, lapply(split_data, check_nlx_if_present))
+
+  # Combine all the check results
+  result <- do.call(rbind, list(ch1, ch2, ch3,
+                                ch4, ch5, ch6,
+                                ch7, ch8, ch9, ch10))
+
+  return(result)
+}
+
+
+#' Checks input data for lifetable reconstruction
+#' @title Check consistency of lifetable input data
+#' @description
+#' Validates a data frame intended for lifetable reconstruction.
+#' The function checks whether the input contains at least one column that can be used to reconstruct a full lifetable and performs a set of structural and value-based validations.
+#' If no grouping variable `.id` is present, one is automatically created with a single level `"all"`.
+#' @details
+#' The function searches for at least one of the following columns (in order of preference):
+#' \itemize{
+#'   \item \code{nMx}
+#'   \item \code{nlx}
+#'   \item \code{nqx}
+#'   \item \code{npx}
+#'   \item \code{ndx}
+#'   \item \code{nLx}
+#' }
+#' The first available column is used for validation checks. The following checks are performed:
+#' \itemize{
+#'   \item Numeric type validation
+#'   \item Missing value detection
+#'   \item Non-negativity constraint
+#' }
+#' If an \code{Age} column is present, additional checks are performed:
+#' \itemize{
+#'   \item Age coherence (numeric validity)
+#'   \item Redundancy detection
+#'   \item Sequential ordering
+#' }
+#' Validation is performed separately for each \code{.id} group.
+#' @param data A data frame containing lifetable-related columns. Must include at least one of: \code{nMx}, \code{nlx}, \code{nqx}, \code{npx}, \code{ndx}, or \code{nLx}. Optionally may contain an \code{Age} column and a grouping column \code{.id}.
+#' @importFrom DemoTools age2int is_age_coherent is_age_redundant is_age_sequential
+#' @return
+#' A data frame summarizing validation results for each group. The returned object contains:
+#' \describe{
+#'   \item{check}{Name of the validation performed}
+#'   \item{message}{Error message if the check fails, otherwise \code{NA}}
+#'   \item{pass}{Either `"Pass"` or `"Fail"`}
+#'   \item{.id}{Group identifier}
+#' }
+#'
+#' @examples
+#' library(readr)
+#' fpath       <- system.file("extdata", "single_hmd_spain.csv.gz", package = "ODAPbackend")
+#' data_in     <- read_csv(fpath, col_select = c(-1), show_col_types = FALSE)
+#' data_in$nMx <- data_in$Deaths / data_in$Exposures
+#' data_in     <- data_in[data_in$`.id` == 1, ]
+#' check_data_lifetable(data_in)
+#'
+#' @seealso
+#' \code{\link{age2int}},
+#' \code{\link{is_age_coherent}},
+#' \code{\link{is_age_redundant}},
+#' \code{\link{is_age_sequential}}
+#'
+#' @export
+#' 
+
+check_data_lifetable <- function(data) {
+  
+  # Ensure '.id' column exists
+  if (!(".id" %in% names(data))) {
+    data$.id <- "all"
+  } 
+  
+  # We can reconstruct lifetable from any of these columns
+  # We do not need ax strictly speaking, we cannot reconstruct from Tx and ex
+  # NOTE: I arranged columns in a order of preference from the best to the worst
+  # i.e. I prefer to construct LT from nMx, then from nlx etc.
+  # now I can choose the one column to check very easily
+  lt_cols <- c("nMx", "nlx", "nqx", "npx", "ndx", "nLx")
+  present <- intersect(lt_cols, names(data))[1]
+  # If at lease one column is present we can build a litable
+  # lets perform a series fo checks  
+  if(is.na(present)) {
+    
+    stop(
+      "Your data does not contain columns that can be used to reconstruct a full lifetable.\n",
+      "It must contain at least one of the following: ",
+      paste(lt_cols, collapse = ", "),
+      call. = FALSE
+    )
+    
+  }
+  
+  split_data <- split(data, data$.id)
+  
+  check_one <- function(d) {
+    
+    # choose column to work with   
+    x <- d[[present]]
+    
+    # Perform checks
+    checks <- c(
+      check_numeric  = !is.numeric(x),
+      check_missing  = any(is.na(x)),
+      check_negative = any(x < 0, na.rm = TRUE)
+    )
+    
+    messages <- c(
+      check_numeric  = sprintf("Column %s must be numeric", present),
+      check_missing  = sprintf("Column %s should not contain missing values", present),
+      check_negative = sprintf("All values in column %s should be >= 0", present)
+    )
+    
+    out <- data.frame(
+      check   = paste0(names(checks)," (", present, ")"),
+      message = ifelse(checks, messages, NA_character_))
+    
+    out$pass <- ifelse(!is.na(out$message), "Fail", "Pass")
+    
+    if("Age" %in% names(d)) { 
+      
+      Age    <- d$Age
+      AgeInt <- age2int(Age)
+      
+      checks_age <- c(
+        check_coherent   = !is_age_coherent(Age,  AgeInt),
+        check_redundant  = is_age_redundant(Age, AgeInt),
+        check_sequential = !is_age_sequential(Age)
+      )
+      
+      messages_age <- c(
+        check_coherent   = "Age values must be numeric",
+        check_redundant  = "Age values are redundant",
+        check_sequential = "Age values should be sequential"
+      )
+      
+      out_age <- data.frame(
+        check   = names(checks_age),
+        message = ifelse(checks_age, messages_age, NA_character_))
+      
+      out_age$pass <- ifelse(!is.na(out$message), "Fail", "Pass")
+      
+      out <- rbind(out, out_age)
+      
+    }
+    
+    return(out)
+    
+  }
+  
+  res <-
+    do.call(rbind, lapply(names(split_data), \(id) {
+      cbind(check_one(split_data[[id]]), .id = id)
+    }))
+  
+  return(res)
+  
+}
+
+
+#' Validate input data for age heaping analysis
+#' @title Check consistency of data for age heaping diagnostics
+#' @description
+#' Validates a data frame prior to performing age heaping analysis.
+#' The function checks whether a specified variable contains valid numeric values and ensures that required structural conditions are satisfied.
+#' If a grouping variable \code{.id} is not present, one is automatically created with a single level `"all"`.
+#' Validation is performed separately for each \code{.id} group.
+#' @param data A data frame containing the variable to be evaluated.
+#' Optionally may contain a grouping column \code{.id}.
+#' @param X A character string specifying the name of the variable to be checked (e.g., `"Deaths"`).
+#' @details
+#' For the selected variable \code{X}, the following checks are performed:
+#' \itemize{
+#'   \item Numeric type validation
+#'   \item Missing value detection
+#'   \item Infinite value detection
+#'   \item Strict positivity constraint (all values must be > 0)
+#'   \item Presence of an \code{Age} column (required for age heaping analysis)
+#' }
+#' Each validation is conducted within levels of \code{.id}.
+#' @return
+#' A data frame summarizing validation results for each group.
+#' The returned object contains:
+#' \describe{
+#'   \item{check}{Name of the validation performed}
+#'   \item{message}{Error message if the check fails, otherwise \code{NA}}
+#'   \item{pass}{Either `"Pass"` or `"Fail"`}
+#'   \item{.id}{Group identifier}
+#' }
+#' @examples
+#' library(readr)
+#' fpath       <- system.file("extdata", "single_hmd_spain.csv.gz", package = "ODAPbackend")
+#' data_in     <- read_csv(fpath, col_select = c(-1), show_col_types = FALSE)
+#' data_in     <- data_in[data_in$`.id` == 1, ]
+#' check_data_heaping(data = data_in, X = "Deaths")
+#'
+#' @export
+#' 
+check_data_heaping <- function(data, X) { 
+  
+  # Ensure '.id' column exists
+  if (!(".id" %in% names(data))) {
+    data$.id <- "all"
+  }
+  
+  # Perform checks
+  # Split data by '.id', apply checks, and combine results
+  split_data <- split(data, data$.id)
+  
+  check_one <- function(d) { 
+    
+    x      <- d[[X]]
+    checks <- c(check_numeric  = !is.numeric(x),
+                check_missing  = any(is.na(x)),
+                check_infinite = any(is.infinite(x)),
+                check_negative = any(x <= 0, na.rm = TRUE),
+                check_age      = !("Age" %in% names(d))
+    )
+    
+    messages <- c(
+      check_numeric  = sprintf("Column %s must be numeric", X),
+      check_missing  = sprintf("Column %s should not contain missing values", X),
+      check_infinite = sprintf("Column %s should not contain infinite values", X),
+      check_nonpos   = sprintf("All values in column %s must be > 0", X),
+      check_age      = "Age column is required to check age heaping"
+    )
+    
+    out <- data.frame(
+      check   = names(checks),
+      message = ifelse(checks, messages, NA_character_))
+    
+    out$pass <- ifelse(!is.na(out$message), "Fail", "Pass")
+    
+    return(out)
+    
+  }
+  
+  res <-
+    do.call(rbind, lapply(names(split_data), \(id) {
+      cbind(check_one(split_data[[id]]), .id = id)
+    }))
+  
+  return(res)
+  
+}
+
+#' Validate input data for time graduation
+#' @description
+#' Performs structural and numerical validation checks for time-series data used in graduation or smoothing procedures. The function verifies that time points are numeric, unique, sequential, and evenly spaced, and that the associated values are numeric, finite, and strictly positive.
+#' Validation is performed separately for each `.id` group. If `.id` is `NULL`, all observations are treated as belonging to a single group.
+#' @param value Numeric vector of values to be graduated (e.g., life expectancy).
+#' @param time Numeric vector of time points corresponding to `value` (e.g., calendar years).
+#' @param .id Optional grouping variable. If provided, checks are performed separately by group.
+#' @importFrom tibble tibble
+#' @importFrom rlang %||%
+#' @return
+#' A data frame summarizing validation results. Contains:
+#' \itemize{
+#'   \item `check` – name of the validation performed
+#'   \item `message` – error message if the check fails, otherwise `NA`
+#'   \item `pass` – `"Pass"` or `"Fail"`
+#'   \item `.id` – group identifier
+#' }
+#'
+#' @examples
+#' check_data_graduate_time(
+#'   value = c(70.1, 70.4, 70.8),
+#'   time  = c(2000, 2005, 2010)
+#' )
+#'
+#' @export
+#' 
+# TODO, should take a data arg rather than building a tibble
+check_data_graduate_time <- function(value, time, .id = NULL) {
+  
+  data <- tibble(
+    value = value,
+    time  = time,
+    .id   = .id %||% "all"
+  )
+  
+  split_data <- split(data, data$.id)
+  
+  check_one <- function(d) {
+    
+    value <- d$value
+    time  <- d$time
+    
+    time_diff <- diff(sort(time))
+    
+    checks <- c(
+      check_time_numeric     = !is.numeric(time),
+      check_value_numeric    = !is.numeric(value),
+      check_time_missing     = any(is.na(time)),
+      check_value_missing    = any(is.na(value)),
+      check_time_infinite    = any(is.infinite(time)),
+      check_value_infinite   = any(is.infinite(value)),
+      check_time_positive    = any(time <= 0, na.rm = TRUE),
+      check_value_positive   = any(value <= 0, na.rm = TRUE),
+      check_time_unique      = length(time) != length(unique(time)),
+      check_time_sequential  = !all(time == sort(time)),
+      check_time_regular     = length(unique(time_diff)) > 1
+    )
+    
+    messages <- c(
+      check_time_numeric     = "Time variable must be numeric",
+      check_value_numeric    = "Value variable must be numeric",
+      check_time_missing     = "Time variable contains missing values",
+      check_value_missing    = "Value variable contains missing values",
+      check_time_infinite    = "Time variable contains infinite values",
+      check_value_infinite   = "Value variable contains infinite values",
+      check_time_positive    = "Time values must be > 0",
+      check_value_positive   = "Value values must be > 0",
+      check_time_unique      = "Time values must be unique",
+      check_time_sequential  = "Time values must be sequential and ordered",
+      check_time_regular     = "Time intervals must be regular (equal spacing)"
+    )
+    
+    out <- data.frame(
+      check   = names(checks),
+      message = ifelse(checks, messages, NA_character_)
+    )
+    
+    out$pass <- ifelse(!is.na(out$message), "Fail", "Pass")
+    
+    return(out)
+  }
+  
+  res <- do.call(
+    rbind,
+    lapply(names(split_data), function(id) {
+      cbind(check_one(split_data[[id]]), .id = id)
+    })
+  )
+  
+  return(res)
+}
+

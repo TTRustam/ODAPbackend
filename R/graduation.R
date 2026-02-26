@@ -1,3 +1,323 @@
+#' Graduate grouped time data to single-year estimates
+#' Expands grouped time data (e.g., 5-year intervals) into single-year values using various graduation methods. The function supports smoothing, monotone interpolation, uniform splitting, cubic regression splines, penalized composite link models (PCLM), and LOESS smoothing.
+#'
+#' Available methods:
+#' \itemize{
+#'   \item `"uniform"` — distributes totals evenly within each interval
+#'   \item `"mono"` — monotone cubic interpolation (Hyman filtered spline)
+#'   \item `"smooth_spline"` — smoothing spline via \code{stats::smooth.spline}
+#'   \item `"cubic"` — cubic regression spline via \code{mgcv::gam}
+#'   \item `"loess"` — local polynomial smoothing via \code{stats::loess}
+#'   \item `"pclm"` — penalized composite link model via \code{ungroup::pclm}
+#' }
+#'
+#' Block totals are preserved for all smoothing-based methods by rescaling
+#' predictions within each interval to match original grouped totals.
+#' @param data_in Data frame containing grouped time data.
+#' @param method Graduation method. One of \code{"loess"}, \code{"smooth_spline"}, \code{"cubic"}, \code{"mono"}, \code{"uniform"}, \code{"pclm"}.
+#' @param X Name of the time variable (character string).
+#' @param Y Name of the grouped value variable (character string).
+#' @param timeInt Width of grouping interval (default = 5).
+#'
+#' @importFrom stats smooth.spline loess loess.control predict splinefun
+#' @importFrom mgcv gam s
+#' @importFrom ungroup pclm
+#' @importFrom tibble rownames_to_column
+#' @importFrom dplyr mutate
+#' @importFrom magrittr %>%
+#' @importFrom DemoTools int2age
+#' @importFrom stats gaussian
+#' @details
+#' If column \code{.id} exists in \code{data_in}, graduation is performed separately within each subgroup. Otherwise all observations are treated as a single group.
+#' For spline-based methods, predicted single-year values are rescaled
+#' within each interval so that grouped totals are exactly preserved.
+#' The PCLM method relies on the \pkg{ungroup} package and may internally rescale small counts to avoid negative fitted values.
+#'
+#' @return
+#' A data frame with columns:
+#' \itemize{
+#'   \item \code{time} — single-year time values
+#'   \item \code{value} — graduated single-year estimates
+#'   \item \code{.id} — subgroup identifier
+#' }
+#'
+#' @examples
+#' df <- data.frame(
+#'   Year   = seq(1950, 2015, by = 5),
+#'   Deaths = c(403564.9, 426012.0, 466215.9, 523753.8, 560874.1,
+#'              545608.3, 555335.9, 594584.6, 608425.3, 638167.3,
+#'              655438.6, 689386.4, 740519.0, 804439.3)
+#' )
+#'
+#' graduate_time(
+#'   df,
+#'   method = "pclm",
+#'   X = "Year",
+#'   Y = "Deaths",
+#'   timeInt = 5
+#' )
+#'
+#' @export
+#' 
+
+graduate_time <- function(data_in, 
+                          method = c("loess", "smooth_spline", "cubic", "mono", "uniform", "pclm"),
+                          X,
+                          Y,
+                          timeInt = 5) {
+  # uniform graduation   
+  graduate_uniform_time <- function(Value,
+                                    time, 
+                                    timeInt = 5) {
+    
+    if (missing(time) & missing(timeInt)) {
+      time <- names2age(Value)
+    }
+    if (missing(timeInt)) {
+      timeInt <- age2int(time, OAG = FALSE)
+    }
+    if (missing(time)) {
+      time <- int2age(timeInt)
+    }
+    if (is_single(time)) {
+      names(Value) <- time
+      return(Value)
+    }
+    
+    out        <- rep(Value / timeInt, each = timeInt)
+    names(out) <- min(time):(min(time) + length(out) - 1)
+    
+    return(out)
+    
+  }
+  
+  # mono graduation
+  graduate_mono_time <- function (Value, time, timeInt = 5) {
+    
+    timeInt <- rep(timeInt, times = length(time))
+    
+    if (missing(time) & missing(timeInt)) {
+      time <- names2age(Value)
+    }
+    if (missing(timeInt)) {
+      timeInt <- age2int(time, OAG = FALSE)
+    }
+    if (missing(time)) {
+      time <- int2age(timeInt)
+    }
+    if (is_single(time)) {
+      names(Value) <- time
+      return(Value)
+    }
+    
+    timePred   <- c(min(time), cumsum(timeInt) + min(time))
+    y          <- c(0, cumsum(Value))
+    timeS      <- min(time):(sum(timeInt) + min(time))
+    y1         <- splinefun(y ~ timePred, method = "hyman")(timeS)
+    out        <- diff(y1)
+    names(out) <- timeS[-length(timeS)]
+    time1      <- min(time):(min(time) + length(out) - 1)
+    names(out) <- time1
+    return(out)
+  }
+  
+  # pclm routine using ungroup package
+  graduate_pclm_time <- function(Value, time, timeInt = 5) {
+    
+    
+    if (missing(time) & missing(timeInt)) {
+      time <- names2age(Value)
+    }
+    if (missing(timeInt)) {
+      timeInt <- age2int(time, OAG = FALSE)
+    }
+    if (missing(time)) {
+      time <- int2age(timeInt)
+    }
+    
+    timeInt <- rep(timeInt, times = length(time))
+    a1      <- seq(from = min(time), to = c(max(time) + (unique(timeInt) - 1)), by = 1)
+    ind0    <- Value == 0
+    have0s  <- any(ind0)
+    
+    if (have0s) {
+      cat("\n0s detected in Value, replacing with .01\n")
+      Value[ind0] <- 0.01
+    }
+    
+    A <- pclm(x     = time, 
+                       y     = Value, 
+                       nlast = unique(timeInt))
+    fac <- 1
+    for(i in 1:3) {
+      
+      if(any(A$fitted < 0)) {
+        
+        fac <- 10 ^ i
+        A <- pclm(x = time, 
+                           y = Value * fac, 
+                           nlast = unique(timeInt))
+        
+      } else {
+        
+        break
+        
+      }
+    }
+    
+    if(any(A$fitted < 0)) {
+      cat("\nCareful, results of PCLM produced some negatives. \n        \nWe tried rescaling inputs by as much as", 
+          fac, "\nbut alas it wasn't enough.\n")
+    }
+    if(fac > 1) {
+      cat("\nPossible small counts issue with these data and the PCLM method\nIt seems to have worked without producing negatives when fitting Value is scaled by", 
+          fac, "\nCouldn't hurt to eyeball results!\n")
+    }
+    
+    B         <- A$fitted / fac
+    a1.fitted <- A$bin.definition$output$breaks["left", ]
+    names(B)  <- a1.fitted
+    return(B)
+    
+  }
+  
+  # cubic spline  
+  graduate_cubic_time <- function(Value, time, timeInt = 5) {
+    
+    if (missing(time) & missing(timeInt)) {
+      time <- names2age(Value)
+    }
+    if (missing(timeInt)) {
+      timeInt <- age2int(time, OAG = FALSE)
+    }
+    if (missing(time)) {
+      time <- int2age(timeInt)
+    }
+    
+    a1 <- seq(from = min(time), to = c(max(time) + (unique(timeInt) - 1)), by = 1)
+    
+    # Smooth totals (shape only)
+    z2 <- gam(
+      Value ~ s(time, bs = "cr"),
+      family = gaussian(),
+      method = "REML"
+    )
+    
+    pred <- predict(
+      z2,
+      newdata = data.frame(time = a1)
+    )
+    
+    # Enforce totals blockwise
+    out <- pred
+    for(i in seq_along(Value)) {
+      idx      <- ((i - 1) * unique(timeInt) + 1):(i * unique(timeInt))
+      out[idx] <- out[idx] * Value[i] / sum(out[idx])
+    }
+    
+    return(out)
+  }
+  
+  # smooth_spline graduation menthod (spline)
+  graduate_smooth_spline_time <- function(Value, time, timeInt = 5)  { 
+    
+    if (missing(time) & missing(timeInt)) {
+      time <- names2age(Value)
+    }
+    if (missing(timeInt)) {
+      timeInt <- age2int(time, OAG = FALSE)
+    }
+    if (missing(time)) {
+      time <- int2age(timeInt)
+    }
+    
+    a1 <- seq(from = min(time), to = c(max(time) + (unique(timeInt) - 1)), by = 1)
+    z  <- smooth.spline(time, Value, spar = 0.6)
+    
+    pred <- predict(z, a1)$y
+    
+    # Enforce totals blockwise
+    out <- pred
+    for (i in seq_along(Value)) {
+      idx      <- ((i - 1) * unique(timeInt) + 1):(i * unique(timeInt))
+      out[idx] <- out[idx] * Value[i] / sum(out[idx])
+    }
+    
+    return(out)
+  }
+  
+  
+  # loess graduation
+  graduate_loess_time <- function(Value, time, timeInt = 5) {
+    
+    if (missing(time) & missing(timeInt)) {
+      time <- names2age(Value)
+    }
+    if (missing(timeInt)) {
+      timeInt <- age2int(time, OAG = FALSE)
+    }
+    if (missing(time)) {
+      time <- int2age(timeInt)
+    }
+    
+    a1 <- seq(from = min(time), to = c(max(time) + (unique(timeInt) - 1)), by = 1)
+    z1 <- loess(Value ~ time,
+                control = loess.control(surface = "direct"))
+    
+    pred <- predict(z1, newdata = data.frame(time = a1))
+    
+    # rescale each 5-year block
+    out <- pred
+    for (i in seq_along(Value)) {
+      idx      <- ((i - 1) * unique(timeInt) + 1):(i * unique(timeInt))
+      out[idx] <- out[idx] * Value[i] / sum(out[idx])
+    }
+    
+    return(out)
+  }
+  
+  method <- match.arg(method)
+  
+  # Ensure '.id' column exists
+  if (!(".id" %in% names(data_in))) {
+    data_in$.id <- "all"
+  }
+  
+  split_data <- split(data_in, data_in$.id)
+  
+  for_one <- function(d) {
+    
+    time   <- d[[X]]
+    Value  <- d[[Y]]
+    
+    res <- switch(method,
+                  "smooth_spline"  = graduate_smooth_spline_time( Value, time, timeInt = timeInt),
+                  "loess"   = graduate_loess_time(  Value, time, timeInt = timeInt),
+                  "cubic"   = graduate_cubic_time(  Value, time, timeInt = timeInt),
+                  "mono"    = graduate_mono_time(   Value, time, timeInt = timeInt),
+                  "uniform" = graduate_uniform_time(Value, time, timeInt = timeInt),
+                  "pclm"    = graduate_pclm_time(   Value, time, timeInt = timeInt)
+    )
+    
+    
+    res <- as.data.frame(res) %>% 
+      rownames_to_column() %>%
+      set_names(c("time", "value")) %>% 
+      mutate("value" = as.numeric(.data$value),
+             "time"  = as.numeric(.data$time))
+    
+    return(res)
+    
+  }
+  
+  out <- do.call(rbind, lapply(names(split_data), \(id) {
+    cbind(for_one(split_data[[id]]), .id = id)
+  }))
+  
+  return(out)
+  
+}
+
 #' @title `smooth_flexible`
 #' @description This is a wrapper around `smooth_flexible_chunk` that allows us to work with `.id` variable and create the output for corresponding groups. Smoothes population or death counts using various methods from the `DemoTools` package and paragraph five from "Method protocol for evaluating census population data by age and sex".
 #' @param data_in tibble or data.frame. A tibble with two numeric columns - population or death counts with supported names: `Pop`, `Population`, `Exp`, `Exposures` or `Deaths`, and corresponding numeric `Age` - provided in single age intervals, 5-year age intervals, or abridged age format e.g. with ages 0, 1, 5, etc.
@@ -26,7 +346,7 @@
 #' "single_hmd_spain.csv.gz", 
 #' package = "ODAPbackend")
 #' data_in <- read_csv(fpath) |>
-#'   dplyr::select(-1)
+#'   select(-1)
 #' ex1 <- smooth_flexible(
 #'  data_in,
 #'  variable     = "Exposures",
@@ -114,13 +434,13 @@ smooth_flexible <- function(data_in,
   #
   
   nms <- results |>
-    dplyr::select(all_of(c(".id", by_args))) |>
+    select(all_of(c(".id", by_args))) |>
     unite("one", everything(), sep = "_") |>
     pull(.data$one)
   
   smoothed_data <- results |>
     mutate(data = map(.data$result, ~ .x[["data"]]))|>
-    dplyr::select(-c(.data$result)) |>
+    select(-c(.data$result)) |>
     unnest(.data$data)
   
   figures <- results$result |>
@@ -141,11 +461,13 @@ smooth_flexible <- function(data_in,
 #' @param constrain_infants logical. A scalar that indicates whether the infant proportions should be constrained or left as is. Defaults to `TRUE`.
 #' @param u5m numeric. Under-five mortality rate. Defaults to NULL.
 #' @param Sex character. Either `m` for males, `f` for females, or `t` for total (default). Please note that in case this parameter is not explicitly provided, the function will scan the data for the column with the corresponding name and use its levels automatically.
+#' @param i18n Optional internationalization object for translating plot labels and titles. Defaults to NULL.
 #' @importFrom dplyr mutate group_by filter pull select summarise
 #' @importFrom tibble tibble
 #' @importFrom rlang := !! .data
 #' @importFrom DemoTools is_single is_abridged check_heaping_bachi groupAges ageRatioScore mav graduate_mono calcAgeAbr age2int graduate_uniform names2age lt_rule_4m0_D0 lt_rule_4m0_m0
-#' @return data_out. A list with two elements: `data_out` - a tibble with two numeric columns - smoothed counts for the chosen variable and `Age` - chosen age grouping, and `arguments` - a list of arguments used in the function.
+#' @importFrom ggplot2 ggplot aes geom_line geom_point scale_color_manual scale_linetype_manual labs theme_minimal theme element_text
+#' @return data_out. A list with three elements: `data_out` - a tibble with two numeric columns - smoothed counts for the chosen variable and `Age` - chosen age grouping, `plot` - a ggplot2 object comparing original vs graduated data, and `arguments` - a list of arguments used in the function.
 #' @export
 #' @examples
 #' library(readr)
@@ -155,7 +477,7 @@ smooth_flexible <- function(data_in,
 #' "five_hmd_spain.csv.gz", 
 #' package = "ODAPbackend")
 #' data_in <- read_csv(fpath) |>
-#'   dplyr::select(-1) |>
+#'   select(-1) |>
 #'   filter(.id == 1)
 #' 
 #' ex1 <- graduate_auto(data_in,
@@ -169,12 +491,15 @@ smooth_flexible <- function(data_in,
 #' ex1$arguments
 #' 
 
+# only can be called for counts and ages
+# no need for rates and TIME
 graduate_auto <- function(data_in,
                           age_out  = c("single", "abridged", "5-year"),
                           variable = NULL,
                           u5m      = NULL,
                           Sex      = c("t", "f", "m"),
-                          constrain_infants = TRUE) {
+                          constrain_infants = TRUE,
+                          i18n     = NULL) {
   
   ## f_args  <- capture_args()
   age_out <- match.arg(age_out, c("single", "abridged", "5-year"))
@@ -501,18 +826,117 @@ graduate_auto <- function(data_in,
   
   # (3) possibly constrain infants
   if(age_out %in% c("abridged", "single") & age_in %in% c("abridged", "single") & constrain_infants) {
-    
+
     v_child      <- data_out[data_out$Age < 5, variable, drop = TRUE]
     vN           <- sum(v_child)
     v_child[1]   <- pct_fst_ages[1] * vN
     v_child[-1]  <- (1 - pct_fst_ages[1]) * vN * v_child[-1] / sum(v_child[-1])
     data_out[data_out$Age < 5, variable] <- v_child
-    
-  }
-  
-  return(list(data_out = data_out
-              # arguments = f_args
 
+  }
+
+  # Pre-translate all UI text for plots (to avoid scope issues in nested functions)
+  cat(sprintf("[GRADUATION] Pre-translating text | i18n_null=%s\n", is.null(i18n)))
+  graduation_text <- translate_text("Graduation", i18n)
+  age_text <- translate_text("Age", i18n)
+  original_text <- translate_text("Original", i18n)
+  graduated_text <- translate_text("Graduated", i18n)
+  type_text <- translate_text("Type", i18n)
+  variable_text <- translate_text(variable, i18n)
+
+  cat(sprintf("[GRADUATION] Translations: graduation='%s', age='%s', original='%s', graduated='%s'\n",
+              graduation_text, age_text, original_text, graduated_text))
+
+  # Create plot comparing original vs graduated data
+  plot_obj <- NULL
+  tryCatch({
+    # Combine original and graduated data
+    original_df <- data.frame(
+      Age = data_in$Age,
+      Value = data_in[[variable]],
+      Type = original_text
+    )
+
+    graduated_df <- data.frame(
+      Age = data_out$Age,
+      Value = data_out[[variable]],
+      Type = graduated_text
+    )
+
+    # Check if we're converting from single ages to grouped ages
+    # If so, normalize graduated values for fair visual comparison
+    input_is_single <- is_single(data_in$Age)
+    output_is_grouped <- !is_single(data_out$Age) &&
+                        (age_out %in% c("5-year", "abridged"))
+
+    if (input_is_single && output_is_grouped) {
+      # For visual comparison, divide grouped values by typical interval width
+      # This shows average per single age rather than sum
+      age_intervals <- diff(c(data_out$Age, max(data_out$Age) + 5))
+      graduated_df$Value <- graduated_df$Value / age_intervals
+      cat(sprintf("[GRADUATION] Normalized graduated values for plot (single->grouped conversion)\n"))
+    }
+
+    # Rename columns to translated versions for hover tooltips
+    names(original_df)[names(original_df) == "Age"] <- age_text
+    names(original_df)[names(original_df) == "Value"] <- variable_text
+    names(original_df)[names(original_df) == "Type"] <- type_text
+
+    names(graduated_df)[names(graduated_df) == "Age"] <- age_text
+    names(graduated_df)[names(graduated_df) == "Value"] <- variable_text
+    names(graduated_df)[names(graduated_df) == "Type"] <- type_text
+
+    plot_data <- rbind(original_df, graduated_df)
+
+    # Create named vector for colors using translated keys
+    color_values <- c("black", "blue")
+    names(color_values) <- c(original_text, graduated_text)
+
+    # Build plot using .data[[]] for runtime evaluation
+    plot_obj <- ggplot(plot_data, aes(x = .data[[age_text]], y = .data[[variable_text]],
+                                       color = .data[[type_text]],
+                                       linetype = .data[[type_text]])) +
+      geom_line(linewidth = 1) +
+      geom_point(data = plot_data[plot_data[[type_text]] == original_text, ], size = 2) +
+      scale_color_manual(name = type_text, values = color_values) +
+      scale_linetype_manual(name = type_text, values = c("solid", "solid")) +
+      labs(x = age_text, y = variable_text,
+           title = paste0(graduation_text, ": ", variable_text)) +
+      theme_minimal(base_size = 14) +
+      theme(
+        legend.position = "bottom",
+        plot.title = element_text(face = "bold", hjust = 0.5)
+      )
+
+    cat(sprintf("[GRADUATION] Plot created successfully\n"))
+  }, error = function(e) {
+    cat(sprintf("[GRADUATION] Plot creation error: %s\n", e$message))
+  })
+
+  # Normalize data_out for download to ensure matching totals
+  # This is different from plot normalization - here we preserve total sums
+  data_out_normalized <- data_out
+
+  # Check if we're converting from single ages to grouped ages
+  input_is_single <- is_single(data_in$Age)
+  output_is_grouped <- !is_single(data_out$Age) &&
+                      (age_out %in% c("5-year", "abridged"))
+
+  if (input_is_single && output_is_grouped) {
+    # Calculate scaling factor to preserve total sum
+    total_original <- sum(data_in[[variable]], na.rm = TRUE)
+    total_graduated <- sum(data_out[[variable]], na.rm = TRUE)
+
+    if (total_graduated > 0) {
+      scaling_factor <- total_original / total_graduated
+      data_out_normalized[[variable]] <- data_out[[variable]] * scaling_factor
+      cat(sprintf("[GRADUATION] Applied normalization factor %.4f to preserve totals in downloaded data\n", scaling_factor))
+    }
+  }
+
+  return(list(data_out = data_out_normalized,
+              plot = plot_obj
+              # arguments = f_args
               ))
 }
 
@@ -534,7 +958,7 @@ graduate_auto <- function(data_in,
 #' "five_hmd_spain.csv.gz", 
 #' package = "ODAPbackend")
 #' data_in <- read_csv(fpath) |>
-#'   dplyr::select(-1) |>
+#'   select(-1) |>
 #'   filter(.id == 1)
 #' 
 #' graduate_auto_5(data_in, "Exposures")$Exposures
@@ -672,7 +1096,7 @@ graduate_auto_5 <- function(dat_5,
 #' "abridged_hmd_spain.csv.gz", 
 #'  package = "ODAPbackend")
 #' data_in <- read_csv(fpath) |>
-#'   dplyr::select(-1) |>
+#'   select(-1) |>
 #'   filter(.id == 1)
 #' 
 #' ex1 <- smooth_flexible_chunk(
@@ -688,6 +1112,17 @@ graduate_auto_5 <- function(dat_5,
 #' ex1$data$Exposures
 #' ex1$figure$figure
 #' ex1$arguments
+
+
+# if the input is time then user provides vector 2011:2020
+# another copy for graduate_time
+# graduate time with pclm and mono, graduate uniform
+# "pclm", "mono", "uniform"
+# do not demand age, time can be various intervals
+# times should be unique, and sequential and make seance, and coherent 2005:2010, 2008:2011
+# no overlap (unique)
+# use the logic of age coherent
+# use teh same plotting logic
 
 smooth_flexible_chunk <- function(data_in,
                                   variable     = "Deaths",
@@ -895,10 +1330,17 @@ smooth_flexible_chunk <- function(data_in,
   }
   
   if(any(data5[, variable, drop = TRUE] < 0)) {
-    stop(
-      "Check your input data or consider changing the selected rough method. 
-      Current smoothing process is returning negative values."
-    )
+    neg_idx <- which(data5[, variable, drop = TRUE] < 0)
+    neg_ages <- paste(data5$Age[neg_idx], collapse = ", ")
+    neg_vals <- paste(round(data5[neg_idx, variable, drop = TRUE], 2), collapse = ", ")
+
+    stop(paste0(
+      "Smoothing produced negative values for '", variable, "'\n",
+      "Method '", rough_method, "' produced negative values at ages: ", neg_ages, "\n",
+      "Values: ", neg_vals, "\n",
+      "This typically happens when data has extreme discontinuities (e.g., large jumps between age groups)\n",
+      "Try using 'auto' method instead, or check your input data for irregularities"
+    ))
   }
   
   # HERE
@@ -1239,8 +1681,8 @@ smooth_flexible_chunk <- function(data_in,
 #' "abridged_hmd_spain.csv.gz", 
 #'  package = "ODAPbackend")
 #' data_in <- read_csv(fpath, show_col_types = FALSE) |>
-#'   dplyr::select(-1) |>
-#'   dplyr::filter(.id == 1)
+#'   select(-1) |>
+#'   filter(.id == 1)
 #' 
 #' data_out <- smooth_flexible_chunk(
 #'   data_in,
@@ -1272,13 +1714,8 @@ plot_smooth_compare <- function(data_in,
   # Translate the variable name for display if translation exists
   variable_display <- translate_text(variable, i18n)
   age_text <- translate_text("Age", i18n)
-  # TR: kludge 2025-10-14 in order to avoid having two columns called Age
-  # in data_out when the language is English, which breaks ggplot code.
-  age_text <- paste0(" ",age_text," ")
-  # same
-  variable_display <- paste0(" ",variable_display," ")
   title_text <- paste(translate_text("Original (black) and adjusted (red)", i18n), variable_display, translate_text("data", i18n))
-  
+
   data_in <- data_in |> 
     mutate(
       single = is_single(.data$Age),
@@ -1296,16 +1733,8 @@ plot_smooth_compare <- function(data_in,
       age_label = case_when(.data$Age == max(.data$Age) ~ paste0(max(.data$Age), "+"),
                             TRUE ~ paste0("[", .data$Age, ",", .data$Age + .data$AgeInt, ")")),
       plot_y = !!sym(variable) / .data$AgeInt)
-  
-  # Translate column names for display
-  names(data_in)[names(data_in) == "age_mid"] <- age_text
-  names(data_out)[names(data_out) == "age_mid"] <- age_text
-
-  names(data_in)[names(data_in) == "plot_y"] <- variable_display
-  names(data_out)[names(data_out) == "plot_y"] <- variable_display
-
-  sym_variable_display <- sym(variable_display)
-  sym_age_text <- sym(age_text)
+  sym_variable_display <- sym("plot_y")
+  sym_age_text <- sym("age_mid")
 
   figure <- 
   ggplot() +
@@ -1326,7 +1755,6 @@ plot_smooth_compare <- function(data_in,
              data_adjusted = data_out,
              data_original = data_in))
 }
-
 
 
 
