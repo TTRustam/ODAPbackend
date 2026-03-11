@@ -19,6 +19,7 @@
 #'     \item \code{"logit"}
 #'     \item \code{"none"}
 #'   }
+#'   NOTE: This is internal, the data are back transformed inside the function
 #' @param method Smoothing engine:
 #'   \itemize{
 #'     \item \code{"supsmu"}
@@ -39,7 +40,7 @@
 #' @importFrom ggplot2 element_text scale_x_continuous scale_y_continuous
 #' @importFrom ggplot2 scale_color_brewer labs
 #' @importFrom scales pretty_breaks
-#' @importFrom stats supsmu loess smooth.spline predict qlogis
+#' @importFrom stats supsmu loess smooth.spline predict qlogis plogis
 #' @importFrom mgcv gam s
 #' @importFrom signal interp1
 #' @importFrom magrittr %>%
@@ -134,7 +135,7 @@ smooth1d <- function(data_in,
   # here transformation occurs
   # we give warning if it is strange
   
-  if(units == "counts" & scale != "none") {
+  if(units == "count" & scale != "none") {
     
     warning("You are applying transformation to counts which is strange")
     
@@ -239,12 +240,27 @@ smooth1d <- function(data_in,
     return(data_out)
   }
   
+  back_transform <- function(y, scale) {
+    switch(scale,
+           log   = exp(y),
+           sqrt  = y^2,
+           logit = plogis(y),
+           none  = y
+    )
+  }
+  
   res <- split_data %>% 
     map(~ for_one(.x)) %>% 
-    bind_rows(.id = ".id")
+    bind_rows(.id = ".id") %>% 
+    mutate(
+      !!sym(Y) := back_transform(.data[[Y]], scale)
+    )
   
   compare <- split_data %>% 
-    bind_rows(.id = ".id")
+    bind_rows(.id = ".id") %>% 
+    mutate(
+      !!sym(Y) := back_transform(.data[[Y]], scale)
+    )
   
   compare$.id  <- as_factor(compare$.id)
   res$.id      <- as_factor(res$.id)

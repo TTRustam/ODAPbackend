@@ -175,7 +175,7 @@ odap_opag <- function(data_in           = NULL,
     
     latest_wpp <- sort(installed_wpp, decreasing = TRUE)[1]
     
-    if(parse_number("wpp2024") < 2022) { 
+    if(parse_number(latest_wpp) < 2022) { 
       
       warning("No single ages are availabe in wpp versions earlier that wpp2022.
               Consider updating the wpp package or change to five year solution.")

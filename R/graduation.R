@@ -64,7 +64,8 @@ graduate_time <- function(data_in,
                           method = c("loess", "native", "cubic", "mono", "uniform", "pclm"),
                           X,
                           Y,
-                          timeInt = 5) {
+                          timeInt = 5,
+                          offset = NULL) {
   # uniform graduation   
   graduate_uniform_time <- function(Value,
                                     time, 
@@ -121,8 +122,12 @@ graduate_time <- function(data_in,
     return(out)
   }
   
+  
   # pclm routine using ungroup package
-  graduate_pclm_time <- function(Value, time, timeInt = 5) {
+  graduate_pclm_time <- function(Value, 
+                                 time, 
+                                 timeInt = 5,
+                                 offset) {
     
     
     if (missing(time) & missing(timeInt)) {
@@ -145,18 +150,40 @@ graduate_time <- function(data_in,
       Value[ind0] <- 0.01
     }
     
-    A <- pclm(x     = time, 
-                       y     = Value, 
-                       nlast = unique(timeInt))
+    
+    if(!is.null(offset)) { 
+      
+      A <- pclm(x      = time, 
+                y      = Value, 
+                nlast  = unique(timeInt),
+                offset = log(offset))
+      
+      
+    } else {
+      
+      A <- pclm(x     = time, 
+                y     = Value, 
+                nlast = unique(timeInt))
+    }
+    
     fac <- 1
     for(i in 1:3) {
       
       if(any(A$fitted < 0)) {
         
         fac <- 10 ^ i
-        A <- pclm(x = time, 
-                           y = Value * fac, 
-                           nlast = unique(timeInt))
+        
+        if(!is.null(offset)) {
+          A <- pclm(x = time,
+                    y = Value * fac,
+                    nlast = unique(timeInt),
+                    offset = log(offset))
+        } else {
+          
+          A <- pclm(x     = time, 
+                    y     = Value * fac, 
+                    nlast = unique(timeInt))
+        }
         
       } else {
         
@@ -290,13 +317,19 @@ graduate_time <- function(data_in,
     time   <- d[[X]]
     Value  <- d[[Y]]
     
+    if(method == "pclm" && !is.null(offset)) {
+      
+      offset <- d[[offset]]
+      
+    }
+    
     res <- switch(method,
                   "native"  = graduate_native_time( Value, time, timeInt = timeInt),
                   "loess"   = graduate_loess_time(  Value, time, timeInt = timeInt),
                   "cubic"   = graduate_cubic_time(  Value, time, timeInt = timeInt),
                   "mono"    = graduate_mono_time(   Value, time, timeInt = timeInt),
                   "uniform" = graduate_uniform_time(Value, time, timeInt = timeInt),
-                  "pclm"    = graduate_pclm_time(   Value, time, timeInt = timeInt)
+                  "pclm"    = graduate_pclm_time(   Value, time, timeInt = timeInt, offset = offset)
     )
     
     
@@ -314,10 +347,11 @@ graduate_time <- function(data_in,
     cbind(for_one(split_data[[id]]), .id = id)
   }))
   
+  names(out) <- c(X, Y, ".id")
+  
   return(out)
   
 }
-
 #' @title `smooth_flexible`
 #' @description This is a wrapper around `smooth_flexible_chunk` that allows us to work with `.id` variable and create the output for corresponding groups. Smoothes population or death counts using various methods from the `DemoTools` package and paragraph five from "Method protocol for evaluating census population data by age and sex".
 #' @param data_in tibble or data.frame. A tibble with two numeric columns - population or death counts with supported names: `Pop`, `Population`, `Exp`, `Exposures` or `Deaths`, and corresponding numeric `Age` - provided in single age intervals, 5-year age intervals, or abridged age format e.g. with ages 0, 1, 5, etc.

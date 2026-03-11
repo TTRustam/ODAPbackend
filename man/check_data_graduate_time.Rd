@@ -4,14 +4,14 @@
 \alias{check_data_graduate_time}
 \title{Validate input data for time graduation}
 \usage{
-check_data_graduate_time(value, time, .id = NULL)
+check_data_graduate_time(data, X, Y)
 }
 \arguments{
-\item{value}{Numeric vector of values to be graduated (e.g., life expectancy).}
+\item{data}{A data frame containing the variable to be evaluated.}
 
-\item{time}{Numeric vector of time points corresponding to \code{value} (e.g., calendar years).}
+\item{X}{Character value indicating name of the time variable e.g. \code{Year}, \code{Time}, \code{y}, etc.}
 
-\item{.id}{Optional grouping variable. If provided, checks are performed separately by group.}
+\item{Y}{Character value indicating name of the ariable to be evaluated, e.g. \code{Deaths}, \code{Exposures}}
 }
 \value{
 A data frame summarizing validation results. Contains:
@@ -27,9 +27,11 @@ Performs structural and numerical validation checks for time-series data used in
 Validation is performed separately for each \code{.id} group. If \code{.id} is \code{NULL}, all observations are treated as belonging to a single group.
 }
 \examples{
-check_data_graduate_time(
-  value = c(70.1, 70.4, 70.8),
-  time  = c(2000, 2005, 2010)
-)
+dt <- data.frame(value = c(70.1, 70.4, 70.8),
+                 time  = c(2000, 2005, 2010))
+
+check_data_graduate_time(data = dt,
+                         X = "time",
+                         Y = "value")
 
 }

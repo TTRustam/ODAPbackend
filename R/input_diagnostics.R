@@ -217,7 +217,9 @@
 #' @export
 #' 
 
-check_heaping_general <- function(data, y, units = c("count", "rate", "proportion")) { 
+check_heaping_general <- function(data, 
+                                  y, 
+                                  units = c("count", "rate", "proportion")) { 
   
   units <- match.arg(units)
   

@@ -1125,9 +1125,10 @@ check_data_heaping <- function(data, X) {
 #' @description
 #' Performs structural and numerical validation checks for time-series data used in graduation or smoothing procedures. The function verifies that time points are numeric, unique, sequential, and evenly spaced, and that the associated values are numeric, finite, and strictly positive.
 #' Validation is performed separately for each `.id` group. If `.id` is `NULL`, all observations are treated as belonging to a single group.
-#' @param value Numeric vector of values to be graduated (e.g., life expectancy).
-#' @param time Numeric vector of time points corresponding to `value` (e.g., calendar years).
-#' @param .id Optional grouping variable. If provided, checks are performed separately by group.
+#' @param data  A data frame containing the variable to be evaluated.
+#' @param X Character value indicating name of the time variable e.g. `Year`, `Time`, `y`, etc.
+#' @param Y Character value indicating name of the ariable to be evaluated, e.g. `Deaths`, `Exposures`
+#' 
 #' @importFrom tibble tibble
 #' @importFrom rlang %||%
 #' @return
@@ -1140,28 +1141,29 @@ check_data_heaping <- function(data, X) {
 #' }
 #'
 #' @examples
-#' check_data_graduate_time(
-#'   value = c(70.1, 70.4, 70.8),
-#'   time  = c(2000, 2005, 2010)
-#' )
+#' dt <- data.frame(value = c(70.1, 70.4, 70.8),
+#'                  time  = c(2000, 2005, 2010))
+#'
+#' check_data_graduate_time(data = dt,
+#'                          X = "time",
+#'                          Y = "value")
 #'
 #' @export
 #' 
 
-check_data_graduate_time <- function(value, time, .id = NULL) {
+check_data_graduate_time <- function(data, X, Y) {
   
-  data <- tibble(
-    value = value,
-    time  = time,
-    .id   = .id %||% "all"
-  )
+  # Ensure '.id' column exists
+  if (!(".id" %in% names(data))) {
+    data$.id <- "all"
+  }
   
   split_data <- split(data, data$.id)
   
   check_one <- function(d) {
     
-    value <- d$value
-    time  <- d$time
+    value <- d[[Y]]
+    time  <- d[[X]]
     
     time_diff <- diff(sort(time))
     
@@ -1213,3 +1215,80 @@ check_data_graduate_time <- function(value, time, .id = NULL) {
   return(res)
 }
 
+
+#' Validate Input Data for Demographic Modules
+#'
+#' `check_upper()` is a wrapper function that dispatches input data
+#' validation to module-specific checking functions. Depending on the
+#' selected module, the appropriate validation routine is applied.
+#'
+#' @param data A data frame containing the input data to be checked.
+#' @param module Character string specifying which module's validation
+#'   routine should be used. Options are:
+#'   \describe{
+#'     \item{generic}{General data validation.}
+#'     \item{opag}{Old-age population analysis data validation.}
+#'     \item{lifetable}{Life table data validation.}
+#'     \item{heaping}{Age heaping diagnostics data validation.}
+#'     \item{graduate_time}{Time graduation data validation.}
+#'   }
+#' @param X Optional character string indicating the name of the
+#'   independent variable (e.g., age or time) used by some modules.
+#' @param Y Optional character string indicating the name of the
+#'   dependent variable used by some modules.
+#'
+#' @return The result of the selected validation function. Typically this
+#'   is a cleaned or validated version of the input data, or an object
+#'   containing diagnostic messages.
+#'
+#' @details
+#' This function acts as a dispatcher that selects the appropriate
+#' data validation routine depending on the module specified in
+#' `module`. Each module has its own structure and required variables,
+#' so dedicated checking functions are used.
+#'
+#' @examples
+#' library(readr)
+#' library(dplyr)
+#' fpath       <- system.file("extdata", "single_hmd_spain.csv.gz", package = "ODAPbackend")
+#' data_in     <- read_csv(fpath, col_select = c(-1), show_col_types = FALSE)
+#' data_in     <- data_in[data_in$`.id` == 1, ]
+#' data_in <- data_in %>% 
+#'   mutate(nMx = Deaths/ Exposures)
+#' opag <- data_in %>% 
+#'  rename(pop = Exposures)
+#' 
+#' check_upper(data = data_in, module = c("generic"))
+#' check_upper(data = opag, module = c("opag"))
+#' check_upper(data = data_in, module = c("heaping"), X = "Deaths")
+#' check_upper(data = data_in, module = c("graduate_time"), X = "Year", Y = "Exposures")
+#'
+#' @export
+#'
+
+check_upper <- function(data, 
+                        module = c("generic", 
+                                   "opag", 
+                                   "lifetable", 
+                                   "heaping",
+                                   "graduate_time"), 
+                        X = NULL, 
+                        Y = NULL) {
+  
+  module  <- match.arg(module)
+  
+  result <- switch(module,
+                   generic       = check_data(              data = data),
+                   opag          = check_data_opag(         data = data),
+                   lifetable     = check_data_lifetable(    data = data),
+                   heaping       = check_data_heaping(      data = data, 
+                                                            X    = X),
+                   graduate_time = check_data_graduate_time(data = data, 
+                                                            X    = X, 
+                                                            Y    = Y)
+  )
+  
+  return(result)
+  
+  
+}

@@ -10,7 +10,8 @@ graduate_time(
   method = c("loess", "native", "cubic", "mono", "uniform", "pclm"),
   X,
   Y,
-  timeInt = 5
+  timeInt = 5,
+  offset = NULL
 )
 }
 \arguments{

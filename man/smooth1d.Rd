@@ -39,7 +39,8 @@ smooth1d(
 \item \code{"sqrt"}
 \item \code{"logit"}
 \item \code{"none"}
-}}
+}
+NOTE: This is internal, the data are back transformed inside the function}
 
 \item{method}{Smoothing engine:
 \itemize{

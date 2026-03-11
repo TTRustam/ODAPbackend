@@ -31,7 +31,7 @@ data_in <- readr::read_csv(system.file("extdata",
 # This is data.frame in, data.frame out;
 # the created data.frame is a table of checks, pass status, and messages for any failures. The failure messages should be displayed usefully somewhere. Checks that 
 # don't pass should necessitate action by users.
-initial_data_checks <- check_data(data_in)
+initial_data_checks <- check_upper(data_in, module = "general")
 initial_data_checks
 # data.frame in, list of three ggplot objects out.
 # We can toggle which plots are created with arguments,
